@@ -50,6 +50,7 @@ section .data
     ; Player A
     playerA_x     times 200 dd 0
     playerA_y     times 200 dd 0
+    playerA_head  dq 0
     playerA_len   dq 3
     playerA_dir   dd 3 ; 0:Up, 1:Down, 2:Left, 3:Right
     playerA_score dq 0 ; (Commented out logically)
@@ -62,6 +63,7 @@ section .data
     ; Player B
     playerB_x     times 200 dd 0
     playerB_y     times 200 dd 0
+    playerB_head  dq 0
     playerB_len   dq 3
     playerB_dir   dd 2
     playerB_score dq 0 ; (Commented out logically)
@@ -74,6 +76,10 @@ section .data
     ; Apple
     apple_x       dd 15
     apple_y       dd 12
+
+    ; Grid for optimization
+    grid          times 800 db 0 ; MAX_X * MAX_Y
+    frame_buffer  times 16384 db 0
 
     ; Key codes
     VK_UP    equ 0x26
@@ -102,6 +108,7 @@ main:
 game_loop:
     call handle_input
     call update_game
+    call update_grid
     call render_game
     mov rcx, 100
     call Sleep
@@ -157,6 +164,7 @@ reset_player_a:
     mov byte [rel playerA_alive], 1
     mov qword [rel playerA_len], 3
     mov dword [rel playerA_dir], 3
+    mov qword [rel playerA_head], 0
     mov eax, [rel playerA_start_x]
     mov dword [rel playerA_x], eax
     sub eax, 1
@@ -173,6 +181,7 @@ reset_player_b:
     mov byte [rel playerB_alive], 1
     mov qword [rel playerB_len], 3
     mov dword [rel playerB_dir], 2
+    mov qword [rel playerB_head], 0
     mov eax, [rel playerB_start_x]
     mov dword [rel playerB_x], eax
     add eax, 1
@@ -267,20 +276,20 @@ update_game:
     call reset_player_a
     jmp .update_b_respawn
 .move_a:
-    mov rcx, [rel playerA_len]
-    dec rcx
+    ; Update head index
+    mov rax, [rel playerA_head]
+    mov rbx, rax ; Save old head index
+    dec rax
+    jge .a_h_ok
+    mov rax, 199
+.a_h_ok:
+    mov [rel playerA_head], rax
+    
     lea r8, [rel playerA_x]
+    mov ecx, [r8 + rbx*4]
     lea r9, [rel playerA_y]
-.shift_a:
-    test rcx, rcx
-    jz .shift_a_done
-    mov eax, [r8 + rcx*4 - 4]
-    mov [r8 + rcx*4], eax
-    mov eax, [r9 + rcx*4 - 4]
-    mov [r9 + rcx*4], eax
-    dec rcx
-    jmp .shift_a
-.shift_a_done:
+    mov edx, [r9 + rbx*4]
+
     mov eax, [rel playerA_dir]
     cmp eax, 0
     je .a_up
@@ -292,37 +301,43 @@ update_game:
     je .a_right
     jmp .a_wrap
 .a_up:
-    dec dword [rel playerA_y]
+    dec edx
     jmp .a_wrap
 .a_down:
-    inc dword [rel playerA_y]
+    inc edx
     jmp .a_wrap
 .a_left:
-    dec dword [rel playerA_x]
+    dec ecx
     jmp .a_wrap
 .a_right:
-    inc dword [rel playerA_x]
+    inc ecx
     jmp .a_wrap
 .a_wrap:
-    mov eax, [rel playerA_x]
-    cmp eax, 0
+    ; Wrap X
+    cmp ecx, 0
     jge .a_w_r
-    mov dword [rel playerA_x], MAX_X_M1 - 1
+    mov ecx, MAX_X_M1 - 1
     jmp .a_w_y
 .a_w_r:
-    cmp eax, MAX_X_M1
+    cmp ecx, MAX_X_M1
     jl .a_w_y
-    mov dword [rel playerA_x], 1
+    mov ecx, 1
 .a_w_y:
-    mov eax, [rel playerA_y]
-    cmp eax, 0
+    ; Wrap Y
+    cmp edx, 0
     jge .a_w_b
-    mov dword [rel playerA_y], MAX_Y_M1 - 1
-    jmp .update_b_respawn
+    mov edx, MAX_Y_M1 - 1
+    jmp .a_store
 .a_w_b:
-    cmp eax, MAX_Y_M1
-    jl .update_b_respawn
-    mov dword [rel playerA_y], 1
+    cmp edx, MAX_Y_M1
+    jl .a_store
+    mov edx, 1
+.a_store:
+    mov rdi, [rel playerA_head]
+    lea r8, [rel playerA_x]
+    mov [r8 + rdi*4], ecx
+    lea r9, [rel playerA_y]
+    mov [r9 + rdi*4], edx
 
 .update_b_respawn:
     ; 1. Respawn Logic B
@@ -335,20 +350,20 @@ update_game:
     call reset_player_b
     jmp .collision_checks
 .move_b:
-    mov rcx, [rel playerB_len]
-    dec rcx
+    ; Update head index
+    mov rax, [rel playerB_head]
+    mov rbx, rax ; Save old head index
+    dec rax
+    jge .b_h_ok
+    mov rax, 199
+.b_h_ok:
+    mov [rel playerB_head], rax
+    
     lea r8, [rel playerB_x]
+    mov ecx, [r8 + rbx*4]
     lea r9, [rel playerB_y]
-.shift_b:
-    test rcx, rcx
-    jz .shift_b_done
-    mov eax, [r8 + rcx*4 - 4]
-    mov [r8 + rcx*4], eax
-    mov eax, [r9 + rcx*4 - 4]
-    mov [r9 + rcx*4], eax
-    dec rcx
-    jmp .shift_b
-.shift_b_done:
+    mov edx, [r9 + rbx*4]
+
     mov eax, [rel playerB_dir]
     cmp eax, 0
     je .b_up
@@ -360,210 +375,170 @@ update_game:
     je .b_right
     jmp .b_wrap
 .b_up:
-    dec dword [rel playerB_y]
+    dec edx
     jmp .b_wrap
 .b_down:
-    inc dword [rel playerB_y]
+    inc edx
     jmp .b_wrap
 .b_left:
-    dec dword [rel playerB_x]
+    dec ecx
     jmp .b_wrap
 .b_right:
-    inc dword [rel playerB_x]
+    inc ecx
     jmp .b_wrap
 .b_wrap:
-    mov eax, [rel playerB_x]
-    cmp eax, 0
+    ; Wrap X
+    cmp ecx, 0
     jge .b_w_r
-    mov dword [rel playerB_x], MAX_X_M1 - 1
+    mov ecx, MAX_X_M1 - 1
     jmp .b_w_y
 .b_w_r:
-    cmp eax, MAX_X_M1
+    cmp ecx, MAX_X_M1
     jl .b_w_y
-    mov dword [rel playerB_x], 1
+    mov ecx, 1
 .b_w_y:
-    mov eax, [rel playerB_y]
-    cmp eax, 0
+    ; Wrap Y
+    cmp edx, 0
     jge .b_w_b
-    mov dword [rel playerB_y], MAX_Y_M1 - 1
-    jmp .collision_checks
+    mov edx, MAX_Y_M1 - 1
+    jmp .b_store
 .b_w_b:
-    cmp eax, MAX_Y_M1
-    jl .collision_checks
-    mov dword [rel playerB_y], 1
+    cmp edx, MAX_Y_M1
+    jl .b_store
+    mov edx, 1
+.b_store:
+    mov rdi, [rel playerB_head]
+    lea r8, [rel playerB_x]
+    mov [r8 + rdi*4], ecx
+    lea r9, [rel playerB_y]
+    mov [r9 + rdi*4], edx
 
 .collision_checks:
+    ; A against Grid
     cmp byte [rel playerA_alive], 0
-    je .body_coll_checks
-    cmp byte [rel playerB_alive], 0
-    je .body_coll_checks
-    mov eax, [rel playerA_x]
-    cmp eax, [rel playerB_x]
-    jne .body_coll_checks
-    mov eax, [rel playerA_y]
-    cmp eax, [rel playerB_y]
-    jne .body_coll_checks
-    mov rax, [rel playerA_len]
-    cmp rax, [rel playerB_len]
-    je .both_die
-    jl .a_dies_h
-    call b_die_logic
-    jmp .eat_checks
-.both_die:
+    je .coll_b
+    mov rdi, [rel playerA_head]
+    lea r8, [rel playerA_y]
+    mov eax, [r8 + rdi*4]
+    imul eax, MAX_X
+    lea r9, [rel playerA_x]
+    add eax, [r9 + rdi*4]
+    lea r8, [rel grid]
+    movzx r15, byte [r8 + rax]
+    
+    cmp r15, 1 ; Wall
+    je .a_dies_coll
+    cmp r15, 4 ; Self
+    je .a_dies_coll
+    cmp r15, 5 ; Other
+    je .a_dies_coll
+    jmp .coll_b
+.a_dies_coll:
     call a_die_logic
-    call b_die_logic
-    jmp .eat_checks
-.a_dies_h:
-    call a_die_logic
-    jmp .eat_checks
 
-.body_coll_checks:
-    cmp byte [rel playerA_alive], 0
-    je .skip_self_a
-    mov r14, 1
-    lea r8, [rel playerA_x]
-    lea r9, [rel playerA_y]
-.self_a:
-    cmp r14, [rel playerA_len]
-    jge .hit_b_a
-    mov eax, [r8]
-    cmp eax, [r8 + r14*4]
-    jne .n_sa
-    mov eax, [r9]
-    cmp eax, [r9 + r14*4]
-    je .a_dies_b
-.n_sa:
-    inc r14
-    jmp .self_a
-.a_dies_b:
-    call a_die_logic
-    jmp .skip_self_a
-.hit_b_a:
-    cmp byte [rel playerB_alive], 0
-    je .skip_self_a
-    mov r14, 0
-    lea r8, [rel playerB_x]
-    lea r9, [rel playerB_y]
-.ha_loop:
-    cmp r14, [rel playerB_len]
-    jge .skip_self_a
-    mov eax, [rel playerA_x]
-    cmp eax, [r8 + r14*4]
-    jne .next_ha
-    mov eax, [rel playerA_y]
-    cmp eax, [r9 + r14*4]
-    je .a_dies_b
-.next_ha:
-    inc r14
-    jmp .ha_loop
-
-.skip_self_a:
+.coll_b:
+    ; B against Grid
     cmp byte [rel playerB_alive], 0
     je .eat_checks
-    mov r14, 1
-    lea r8, [rel playerB_x]
-    lea r9, [rel playerB_y]
-.self_b:
-    cmp r14, [rel playerB_len]
-    jge .hit_a_b
-    mov eax, [r8]
-    cmp eax, [r8 + r14*4]
-    jne .n_sb
-    mov eax, [r9]
-    cmp eax, [r9 + r14*4]
-    je .b_dies_b
-.n_sb:
-    inc r14
-    jmp .self_b
-.b_dies_b:
-    call b_die_logic
+    mov rdi, [rel playerB_head]
+    lea r8, [rel playerB_y]
+    mov eax, [r8 + rdi*4]
+    imul eax, MAX_X
+    lea r9, [rel playerB_x]
+    add eax, [r9 + rdi*4]
+    lea r8, [rel grid]
+    movzx r15, byte [r8 + rax]
+    
+    cmp r15, 1 ; Wall
+    je .b_dies_coll
+    cmp r15, 4 ; Other
+    je .b_dies_coll
+    cmp r15, 5 ; Self
+    je .b_dies_coll
     jmp .eat_checks
-.hit_a_b:
-    cmp byte [rel playerA_alive], 0
-    je .eat_checks
-    mov r14, 0
-    lea r8, [rel playerA_x]
-    lea r9, [rel playerA_y]
-.hb_loop:
-    cmp r14, [rel playerA_len]
-    jge .eat_checks
-    mov eax, [rel playerB_x]
-    cmp eax, [r8 + r14*4]
-    jne .n_hb
-    mov eax, [rel playerB_y]
-    cmp eax, [r9 + r14*4]
-    je .b_dies_b
-.n_hb:
-    inc r14
-    jmp .hb_loop
+.b_dies_coll:
+    call b_die_logic
 
 .eat_checks:
     cmp byte [rel playerA_alive], 0
     je .eat_b
-    mov eax, [rel playerA_x]
-    cmp eax, [rel apple_x]
-    jne .eat_ca_a
     mov eax, [rel playerA_y]
-    cmp eax, [rel apple_y]
-    jne .eat_ca_a
-    ; inc qword [rel playerA_score] (Commented)
+    imul eax, MAX_X
+    add eax, [rel playerA_x]
+    lea r8, [rel grid]
+    movzx r15, byte [r8 + rax]
+    
+    cmp r15, 2 ; Apple
+    jne .check_ca_a
     inc qword [rel playerA_len]
     call spawn_apple
     jmp .eat_b
-.eat_ca_a:
+.check_ca_a:
+    cmp r15, 3 ; Corpse Apple
+    jne .eat_b
+    ; Eat it, but must find which one to mark -1
+    inc qword [rel playerA_len]
     mov r14, 0
     lea r8, [rel corpse_apples_x]
     lea r9, [rel corpse_apples_y]
-.eca_a:
+.eca_a_find:
     cmp r14, [rel num_corpse_apples]
     jge .eat_b
     mov eax, [rel playerA_x]
+    ; Wait, we need the head position. playerA_x[head]
+    mov rdi, [rel playerA_head]
+    lea r10, [rel playerA_x]
+    mov eax, [r10 + rdi*4]
     cmp eax, [r8 + r14*4]
     jne .n_eca_a
-    mov eax, [rel playerA_y]
+    lea r11, [rel playerA_y]
+    mov eax, [r11 + rdi*4]
     cmp eax, [r9 + r14*4]
     jne .n_eca_a
-    ; inc qword [rel playerA_score] (Commented)
-    inc qword [rel playerA_len]
     mov dword [r8 + r14*4], -1
     jmp .eat_b
 .n_eca_a:
     inc r14
-    jmp .eca_a
+    jmp .eca_a_find
 
 .eat_b:
     cmp byte [rel playerB_alive], 0
     je .ud
-    mov eax, [rel playerB_x]
-    cmp eax, [rel apple_x]
-    jne .eat_ca_b
     mov eax, [rel playerB_y]
-    cmp eax, [rel apple_y]
-    jne .eat_ca_b
-    ; inc qword [rel playerB_score] (Commented)
+    imul eax, MAX_X
+    add eax, [rel playerB_x]
+    lea r8, [rel grid]
+    movzx r15, byte [r8 + rax]
+
+    cmp r15, 2 ; Apple
+    jne .check_ca_b
     inc qword [rel playerB_len]
     call spawn_apple
     jmp .ud
-.eat_ca_b:
+.check_ca_b:
+    cmp r15, 3 ; Corpse Apple
+    jne .ud
+    inc qword [rel playerB_len]
     mov r14, 0
     lea r8, [rel corpse_apples_x]
     lea r9, [rel corpse_apples_y]
-.eca_b:
+.eca_b_find:
     cmp r14, [rel num_corpse_apples]
     jge .ud
-    mov eax, [rel playerB_x]
+    mov rdi, [rel playerB_head]
+    lea r10, [rel playerB_x]
+    mov eax, [r10 + rdi*4]
     cmp eax, [r8 + r14*4]
     jne .n_eca_b
-    mov eax, [rel playerB_y]
+    lea r11, [rel playerB_y]
+    mov eax, [r11 + rdi*4]
     cmp eax, [r9 + r14*4]
     jne .n_eca_b
-    ; inc qword [rel playerB_score] (Commented)
-    inc qword [rel playerB_len]
     mov dword [r8 + r14*4], -1
     jmp .ud
 .n_eca_b:
     inc r14
-    jmp .eca_b
+    jmp .eca_b_find
 
 .ud:
     add rsp, 40
@@ -572,19 +547,25 @@ update_game:
 a_die_logic:
     dec qword [rel playerA_lives]
     mov r14, 0
-    lea r8, [rel playerA_x]
-    lea r9, [rel playerA_y]
     mov r15, [rel num_corpse_apples]
-    lea r11, [rel corpse_apples_x]
-    lea r10, [rel corpse_apples_y]
 .adl:
     cmp r14, [rel playerA_len]
     jge .adld
     cmp r15, 800
     jge .adld
-    mov eax, [r8 + r14*4]
+    mov rax, [rel playerA_head]
+    add rax, r14
+    cmp rax, 200
+    jl .a_idx_ok
+    sub rax, 200
+.a_idx_ok:
+    lea r8, [rel playerA_x]
+    lea r9, [rel playerA_y]
+    lea r11, [rel corpse_apples_x]
+    lea r10, [rel corpse_apples_y]
+    mov eax, [r8 + rax*4]
     mov [r11 + r15*4], eax
-    mov eax, [r9 + r14*4]
+    mov eax, [r9 + rax*4]
     mov [r10 + r15*4], eax
     inc r14
     inc r15
@@ -598,19 +579,25 @@ a_die_logic:
 b_die_logic:
     dec qword [rel playerB_lives]
     mov r14, 0
-    lea r8, [rel playerB_x]
-    lea r9, [rel playerB_y]
     mov r15, [rel num_corpse_apples]
-    lea r11, [rel corpse_apples_x]
-    lea r10, [rel corpse_apples_y]
 .bdl:
     cmp r14, [rel playerB_len]
     jge .bdld
     cmp r15, 800
     jge .bdld
-    mov eax, [r8 + r14*4]
+    mov rax, [rel playerB_head]
+    add rax, r14
+    cmp rax, 200
+    jl .b_idx_ok
+    sub rax, 200
+.b_idx_ok:
+    lea r8, [rel playerB_x]
+    lea r9, [rel playerB_y]
+    lea r11, [rel corpse_apples_x]
+    lea r10, [rel corpse_apples_y]
+    mov eax, [r8 + rax*4]
     mov [r11 + r15*4], eax
-    mov eax, [r9 + r14*4]
+    mov eax, [r9 + rax*4]
     mov [r10 + r15*4], eax
     inc r14
     inc r15
@@ -638,6 +625,128 @@ spawn_apple:
     add rsp, 40
     ret
 
+update_grid:
+    sub rsp, 40
+    lea rdi, [rel grid]
+    mov rcx, 800
+    xor al, al
+    cld
+    rep stosb
+
+    ; 1. Walls
+    lea r8, [rel grid]
+    mov rcx, MAX_X
+.wall_h:
+    dec rcx
+    mov byte [r8 + rcx], 1
+    mov byte [r8 + (MAX_Y-1)*MAX_X + rcx], 1
+    test rcx, rcx
+    jnz .wall_h
+    mov rcx, MAX_Y
+.wall_v:
+    dec rcx
+    mov rax, rcx
+    imul rax, MAX_X
+    mov byte [r8 + rax], 1
+    mov byte [r8 + rax + MAX_X - 1], 1
+    test rcx, rcx
+    jnz .wall_v
+
+    ; 2. Apple
+    mov eax, [rel apple_y]
+    imul eax, MAX_X
+    add eax, [rel apple_x]
+    lea r8, [rel grid]
+    mov byte [r8 + rax], 2
+
+    ; 3. Corpse Apples
+    mov r14, 0
+.ca_loop:
+    cmp r14, [rel num_corpse_apples]
+    jge .snake_a
+    lea r8, [rel corpse_apples_x]
+    lea r9, [rel corpse_apples_y]
+    mov eax, [r9 + r14*4]
+    cmp eax, -1
+    je .next_ca
+    imul eax, MAX_X
+    add eax, [r8 + r14*4]
+    lea r10, [rel grid]
+    mov byte [r10 + rax], 3
+.next_ca:
+    inc r14
+    jmp .ca_loop
+
+    ; 4. Snake A
+.snake_a:
+    cmp byte [rel playerA_alive], 0
+    je .respawn_a
+    mov r14, 0
+.la:
+    cmp r14, [rel playerA_len]
+    jge .snake_b
+    mov rax, [rel playerA_head]
+    add rax, r14
+    cmp rax, 200
+    jl .a_idx_ok
+    sub rax, 200
+.a_idx_ok:
+    lea r8, [rel playerA_x]
+    lea r9, [rel playerA_y]
+    mov edx, [r9 + rax*4]
+    imul edx, MAX_X
+    add edx, [r8 + rax*4]
+    lea r10, [rel grid]
+    mov byte [r10 + rdx], 4
+    inc r14
+    jmp .la
+
+.respawn_a:
+    cmp qword [rel playerA_lives], 0
+    jle .snake_b
+    mov eax, [rel playerA_start_y]
+    imul eax, MAX_X
+    add eax, [rel playerA_start_x]
+    lea r8, [rel grid]
+    mov byte [r8 + rax], 6
+
+    ; 5. Snake B
+.snake_b:
+    cmp byte [rel playerB_alive], 0
+    je .respawn_b
+    mov r14, 0
+.lb:
+    cmp r14, [rel playerB_len]
+    jge .grid_done
+    mov rax, [rel playerB_head]
+    add rax, r14
+    cmp rax, 200
+    jl .b_idx_ok
+    sub rax, 200
+.b_idx_ok:
+    lea r8, [rel playerB_x]
+    lea r9, [rel playerB_y]
+    mov edx, [r9 + rax*4]
+    imul edx, MAX_X
+    add edx, [r8 + rax*4]
+    lea r10, [rel grid]
+    mov byte [r10 + rdx], 5
+    inc r14
+    jmp .lb
+
+.respawn_b:
+    cmp qword [rel playerB_lives], 0
+    jle .grid_done
+    mov eax, [rel playerB_start_y]
+    imul eax, MAX_X
+    add eax, [rel playerB_start_x]
+    lea r8, [rel grid]
+    mov byte [r8 + rax], 7
+
+.grid_done:
+    add rsp, 40
+    ret
+
 render_game:
     sub rsp, 40
     lea rcx, [rel ansi_home]
@@ -647,160 +756,188 @@ render_game:
     mov r8, [rel playerB_lives]
     call printf
     
+    lea rdi, [rel frame_buffer]
+    mov r14, -1 ; Current color state (-1: none, 0: reset, 1: white, 2: yellow, 3: cyan, 4: magenta)
+
     mov r12, 0 ; Y
 .ly:
     mov r13, 0 ; X
 .lx:
-    cmp r12, 0
-    je .dw
-    cmp r12, MAX_Y-1
-    je .dw
-    cmp r13, 0
-    je .dw
-    cmp r13, MAX_X-1
-    je .dw
+    mov rax, r12
+    imul rax, MAX_X
+    add rax, r13
+    lea r8, [rel grid]
+    movzx r15, byte [r8 + rax]
+    
+    ; Determine required color
+    mov r8, 0 ; Default: reset
+    cmp r15, 0
+    je .apply_color
+    cmp r15, 1
+    je .set_white
+    cmp r15, 2
+    je .set_yellow
+    cmp r15, 3
+    je .set_yellow
+    cmp r15, 4
+    je .set_cyan
+    cmp r15, 5
+    je .set_magenta
+    cmp r15, 6
+    je .set_cyan
+    cmp r15, 7
+    je .set_magenta
+    jmp .apply_color
 
-    ; Respawn A
-    cmp byte [rel playerA_alive], 0
-    jne .rend_a
-    cmp qword [rel playerA_lives], 0
-    jle .rend_a
-    mov eax, [rel playerA_start_x]
-    cmp r13d, eax
-    jne .rend_a
-    mov eax, [rel playerA_start_y]
-    cmp r12d, eax
-    jne .rend_a
-    lea rcx, [rel ansi_cyan]
-    call printf
-    lea rcx, [rel fmt_respawn]
+.set_white:
+    mov r8, 1
+    jmp .apply_color
+.set_yellow:
+    mov r8, 2
+    jmp .apply_color
+.set_cyan:
+    mov r8, 3
+    jmp .apply_color
+.set_magenta:
+    mov r8, 4
+    jmp .apply_color
+
+.apply_color:
+    cmp r8, r14
+    je .color_ok
+    mov r14, r8
+    ; Add ANSI code
+    cmp r8, 0
+    je .write_reset
+    cmp r8, 1
+    je .write_white
+    cmp r8, 2
+    je .write_yellow
+    cmp r8, 3
+    je .write_cyan
+    cmp r8, 4
+    je .write_magenta
+    jmp .color_ok
+
+.write_reset:
+    lea rsi, [rel ansi_reset]
+    call .append_str
+    jmp .color_ok
+.write_white:
+    lea rsi, [rel ansi_white]
+    call .append_str
+    jmp .color_ok
+.write_yellow:
+    lea rsi, [rel ansi_yellow]
+    call .append_str
+    jmp .color_ok
+.write_cyan:
+    lea rsi, [rel ansi_cyan]
+    call .append_str
+    jmp .color_ok
+.write_magenta:
+    lea rsi, [rel ansi_magenta]
+    call .append_str
+    jmp .color_ok
+
+.color_ok:
+    ; Add Character
+    cmp r15, 0
+    je .char_empty
+    cmp r15, 1
+    je .char_wall
+    cmp r15, 2
+    je .char_apple
+    cmp r15, 3
+    je .char_apple
+    cmp r15, 4
+    je .char_snake_a
+    cmp r15, 5
+    je .char_snake_b
+    cmp r15, 6
+    je .char_resp_a
+    cmp r15, 7
+    je .char_resp_b
+    jmp .next_pixel
+
+.char_empty:
+    mov byte [rdi], " "
+    inc rdi
+    jmp .next_pixel
+.char_wall:
+    mov byte [rdi], "#"
+    inc rdi
+    jmp .next_pixel
+.char_apple:
+    mov byte [rdi], "@"
+    inc rdi
+    jmp .next_pixel
+.char_snake_a:
+    mov byte [rdi], "O"
+    inc rdi
+    jmp .next_pixel
+.char_snake_b:
+    mov byte [rdi], "X"
+    inc rdi
+    jmp .next_pixel
+
+.char_resp_a:
     mov rdx, [rel playerA_respawn_timer]
     add rdx, 9
     mov rax, rdx
     xor rdx, rdx
     mov rbx, 10
     div rbx
-    mov rdx, rax
-    call printf
-    add r13, 2
-    jmp .nx
-.rend_a:
-    cmp byte [rel playerA_alive], 0
-    je .rend_b
-    mov r14, 0
-    lea r8, [rel playerA_x]
-    lea r9, [rel playerA_y]
-.la:
-    cmp r14, [rel playerA_len]
-    jge .rend_b
-    cmp r13d, [r8 + r14*4]
-    jne .na
-    cmp r12d, [r9 + r14*4]
-    jne .na
-    lea rcx, [rel ansi_cyan]
-    call printf
-    lea rcx, [rel fmt_str]
-    lea rdx, [rel char_snake_a]
-    call printf
-    jmp .nx
-.na:
-    inc r14
-    jmp .la
-.rend_b:
-    ; Respawn B
-    cmp byte [rel playerB_alive], 0
-    jne .rend_b_snake
-    cmp qword [rel playerB_lives], 0
-    jle .rend_b_snake
-    mov eax, [rel playerB_start_x]
-    cmp r13d, eax
-    jne .rend_b_snake
-    mov eax, [rel playerB_start_y]
-    cmp r12d, eax
-    jne .rend_b_snake
-    lea rcx, [rel ansi_magenta]
-    call printf
-    lea rcx, [rel fmt_respawn]
+    add al, '0'
+    mov byte [rdi], "("
+    mov byte [rdi+1], al
+    mov byte [rdi+2], ")"
+    add rdi, 3
+    add r13, 2 ; Respawn is 3 chars
+    jmp .next_pixel
+
+.char_resp_b:
     mov rdx, [rel playerB_respawn_timer]
     add rdx, 9
     mov rax, rdx
     xor rdx, rdx
     mov rbx, 10
     div rbx
-    mov rdx, rax
-    call printf
-    add r13, 2
-    jmp .nx
-.rend_b_snake:
-    cmp byte [rel playerB_alive], 0
-    je .rend_apple
-    mov r14, 0
-    lea r8, [rel playerB_x]
-    lea r9, [rel playerB_y]
-.lb:
-    cmp r14, [rel playerB_len]
-    jge .rend_apple
-    cmp r13d, [r8 + r14*4]
-    jne .nb
-    cmp r12d, [r9 + r14*4]
-    jne .nb
-    lea rcx, [rel ansi_magenta]
-    call printf
-    lea rcx, [rel fmt_str]
-    lea rdx, [rel char_snake_b]
-    call printf
-    jmp .nx
-.nb:
-    inc r14
-    jmp .lb
-.rend_apple:
-    cmp r13d, [rel apple_x]
-    jne .cca
-    cmp r12d, [rel apple_y]
-    jne .cca
-    jmp .da
-.cca:
-    mov r14, 0
-    lea r8, [rel corpse_apples_x]
-    lea r9, [rel corpse_apples_y]
-.rca_loop:
-    cmp r14, [rel num_corpse_apples]
-    jge .de
-    cmp r13d, [r8 + r14*4]
-    jne .next_rca
-    cmp r12d, [r9 + r14*4]
-    je .da
-.next_rca:
-    inc r14
-    jmp .rca_loop
-.da:
-    lea rcx, [rel ansi_yellow]
-    call printf
-    lea rcx, [rel fmt_str]
-    lea rdx, [rel char_apple]
-    call printf
-    jmp .nx
-.dw:
-    lea rcx, [rel ansi_white]
-    call printf
-    lea rcx, [rel fmt_str]
-    lea rdx, [rel char_wall]
-    call printf
-    jmp .nx
-.de:
-    lea rcx, [rel fmt_str]
-    lea rdx, [rel char_empty]
-    call printf
-.nx:
-    lea rcx, [rel ansi_reset]
-    call printf
+    add al, '0'
+    mov byte [rdi], "("
+    mov byte [rdi+1], al
+    mov byte [rdi+2], ")"
+    add rdi, 3
+    add r13, 2 ; Respawn is 3 chars
+    jmp .next_pixel
+
+.next_pixel:
     inc r13
     cmp r13, MAX_X
     jl .lx
-    lea rcx, [rel newline]
-    call printf
+    
+    mov byte [rdi], 10 ; Newline
+    inc rdi
     inc r12
     cmp r12, MAX_Y
     jl .ly
+
+    mov byte [rdi], 0 ; Null terminator
+    lea rcx, [rel fmt_str]
+    lea rdx, [rel frame_buffer]
+    call printf
+    
     add rsp, 40
+    ret
+
+.append_str:
+.al:
+    mov al, [rsi]
+    test al, al
+    jz .ad
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    jmp .al
+.ad:
     ret
